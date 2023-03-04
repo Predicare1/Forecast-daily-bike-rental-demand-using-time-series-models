@@ -1,0 +1,823 @@
+---
+title: "Forecast daily bike rental demand using time series models"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: !expr bslib::bs_theme(bootswatch = "cerulean", font_scale = 0.8)
+    highlight: kate
+    base_font: !expr bslib::font_google("Grandstander")
+    code_folding: show
+    toc: true
+    toc_depth: 2
+    toc_float:
+      collapse: true
+      smooth_scroll: true
+author: "Olayinka Arimoro"
+---
+
+
+
+```{r setup, include=FALSE}
+## Set knit options
+knitr::opts_chunk$set(echo = TRUE, fig.width = 8, fig.height = 5, message = F, warning = F)
+
+## Set theme options
+thematic::thematic_on()
+```
+
+# About Data Analysis Report
+
+This RMarkdown file contains the report of the data analysis done for the project on forecasting daily bike rental demand using time series models in R. It contains analysis such as data exploration, summary statistics and building the time series models. The final report was completed on `r date()`. 
+
+**Data Description:**
+
+This dataset contains the daily count of rental bike transactions between years 2011 and 2012 in Capital bikeshare system with the corresponding weather and seasonal information.
+
+**Data Source:** https://archive.ics.uci.edu/ml/datasets/bike+sharing+dataset
+
+**Relevant Paper:** 
+
+Fanaee-T, Hadi, and Gama, Joao, 'Event labeling combining ensemble detectors and background knowledge', Progress in Artificial Intelligence (2013): pp. 1-15, Springer Berlin Heidelberg
+
+# Task One: Load and explore the data
+
+## Load data and install packages
+
+```{r, message=FALSE, warning=FALSE}
+## Import required packages
+library(tidyverse)
+library(lubridate)
+library(timetk)
+library(tseries)
+library(forecast)
+library(TTR)
+
+## Load the inbuilt data
+data("bike_sharing_daily")
+
+## View the data
+# View(bike_sharing_daily)
+```
+
+## Descriptive data exploration
+
+### Question 1: How do the temperatures change across the seasons?
+
+Currently, the `temp` variable is the normalized temperature in Celsius. We can create a new variable containing the temperature in Celsius. Then, use the `ts()` function to make the data a time series object. Then, we can create a plot across two years. 
+
+```{r}
+## Convert to from normalized temperature in Celsius to
+## temperature in Celsius
+bike_sharing_daily$temp_cel <- bike_sharing_daily$temp*(39 + 8) - 8
+
+## Convert to a time series object
+day_temp_cel <- ts(bike_sharing_daily$temp_cel)
+
+## Create a plot of temperature across two years
+plot(day_temp_cel, main = "Temperature across the 2 years", 
+     ylab="Temperature in Celsius", 
+     col="blue", xlab="Time by day index (1 -> 2011-01-01)")
+```
+
+The temperature is increasing at the beginning of every year (spring and summer), reaching it's peak at summer then keep decreasing through (fall and winter) until the end of the year.
+
+We can get more specific to answer questions on the mean and median temperatures across seasons.
+
+### Question 2: What are the mean and median temperatures?
+
+#### Mean and Median temperature of Spring
+
+```{r}
+spring_temp <- subset(bike_sharing_daily, season == 1)$temp_cel
+print(mean(spring_temp))
+print(median(spring_temp))
+```
+
+#### Mean and Median temperature of Summer
+
+```{r}
+summer_temp <- subset(bike_sharing_daily, season == 2)$temp_cel
+print(mean(summer_temp))
+print(median(summer_temp))
+```
+
+#### Mean and Median temperature of Fall
+
+```{r}
+fall_temp <- subset(bike_sharing_daily, season == 3)$temp_cel
+print(mean(fall_temp))
+print(median(fall_temp))
+```
+
+#### Mean and Median temperature of Winter
+
+```{r}
+winter_temp <- subset(bike_sharing_daily, season == 4)$temp_cel
+print(mean(winter_temp))
+print(median(winter_temp)) 
+```
+
+We can then create a boxplot to compare the distribution of temperature across different seasons.
+
+```{r}
+boxplot(subset(bike_sharing_daily, season == 1)$temp_cel, 
+        subset(bike_sharing_daily, season == 2)$temp_cel, 
+        subset(bike_sharing_daily, season == 3)$temp_cel, 
+        subset(bike_sharing_daily, season == 4)$temp_cel, 
+        col = c("green", "red", "orange", "blue"), 
+        xlab = "Spring - Summer - Fall - Winter", 
+        ylab = "Temperature")
+```
+
+
+### Question 3: Is there a correlation between the temp/atemp/mean.temp.atemp and the total count of bike rentals?
+
+A very useful question is if there is a correlation between temperature, feeling temperature, the average of temperature and feeling temperature and the total count of bike rentals. The idea is to see if temperature is related to bike rentals.
+
+First we add two new columns to the data set. The first column we will add will convert the normalized feeling temperature in Celsius `atemp` to feeling temperature in Celsius `atemp_cel`. The second column will be the average of temperature `temp_cel` and feeling temperature in Celsius `atemp_cel`.
+
+```{r}
+## Convert to from normalized feeling temperature in Celsius to 
+## feeling temperature in Celsius
+bike_sharing_daily$atemp_cel <- bike_sharing_daily$atemp*(50 + 16) - 16
+
+## Calculate the average
+bike_sharing_daily$mean_temp_atemp = (bike_sharing_daily$temp_cel + bike_sharing_daily$atemp_cel)/2
+```
+
+**Now, we can calculate correlations:**
+
+#### Correlation between the temperature and bike count
+
+```{r}
+cor(bike_sharing_daily$temp_cel, bike_sharing_daily$cnt, method = c("pearson"))
+```
+
+#### Correlation between the feeling temperature and bike count
+
+```{r}
+cor(bike_sharing_daily$atemp_cel, bike_sharing_daily$cnt, method = c("pearson"))
+```
+
+#### Correlation between the mean_temp_atemp and bike count
+
+```{r}
+cor(bike_sharing_daily$mean_temp_atemp, bike_sharing_daily$cnt, method = c("pearson"))
+```
+
+Correlation values are greater than **0.6** . We can affirm that there is a correlation between the 3 temperature variables and the total count of bike rentals.
+
+### Question 4: What are the mean temperature, humidity, wind speed and total rentals per months?
+
+For this descriptive question, we will create a summary table for mean temperature, humidity, wind speed and total rentals per months. In the code below, the normalized humidity was converted to humidity by multiplying by 100 (`hum*100`). Similarly, normalized wind speed was converted to wind speed by multiplying by 67 (`windspeed*67`).
+
+**Note:** 
+
+To know how these normalized values were converted, read the data description in R by doing `?bike_sharing_daily`. You will see the value with which the variables were normalized. For example, the normalized humidity was created by dividing by 100, hence, the need to multiply by 100 to get the original humidity values. 
+
+I converted these normalized variables back to their values to get a proper sense of the descriptive analysis. The original values will give better meaning than the normalized values.
+
+```{r}
+
+## Create an empty data frame with correct header names
+per_months_df <- data.frame()
+
+header <- c("Month", "Mean Temperature", "Mean Humidity", 
+            "Mean Windspeed", "Total rentals")
+
+## A for loop to create the mean of temperature, humidity, 
+## wind speed and total rentals per months
+for (i in (1:12)) {
+  sub_data <- subset(bike_sharing_daily, mnth == i)
+  line <-  c(i, mean((sub_data)$temp_cel), mean((sub_data)$hum*100), 
+             mean((sub_data)$windspeed*67), sum((sub_data)$cnt))
+  ## Save the results in the empty data frame
+  per_months_df = rbind(per_months_df, line)
+}
+
+## Set the column names as the correct header names
+colnames(per_months_df) <- header
+
+## Print the results
+per_months_df
+```
+
+As you would imagine, in the Winter months where the mean temperature is low in the 1st, 2nd, 11th, and 12th months, the total bike rentals dropped, suggesting that this may not be the best time for business. However, as the weather begins to heat up in the 4th month through the 9th month, we see an overall steady increase in total bike rentals.
+
+### Question 5: Is temperature associated with bike rentals (registered vs. casual)?
+
+To answer this question, first, we calculate correlations.
+```{r}
+cor(bike_sharing_daily$temp_cel, bike_sharing_daily$casual, method = c("pearson"))
+cor(bike_sharing_daily$temp_cel, bike_sharing_daily$registered, method = c("pearson"))
+```
+
+The correlation coefficients are not high. We may conclude that temperature and the count of bike users are not correlated!
+
+Now, let's create a time series object for count of casual users and count of registered users using `ts()`. Then, create a plot to visualize temperature by causual and registered bike rentals.
+
+```{r}
+
+## Create time series object
+day_casual <- ts(bike_sharing_daily$casual)
+day_registered <- ts(bike_sharing_daily$registered)
+
+## Create plot
+par(mfrow=c(2,1))
+plot(day_temp_cel, day_casual, type="h", 
+     xlab="Temperature", ylab="Count of casual users")
+plot(day_temp_cel, day_registered, type="h", 
+     xlab="Temperature", ylab="Count of registered users")
+```
+
+```{r}
+seqplot.ts(day_casual, day_registered, 
+           ylab = "Casual, Registred", xlab="Time by day index (1 -> 2011-01-01)")
+```
+
+Both registered bike rentals and casual bike rentals get their highest values when when temperature is between 14 and 24 degrees. And for both rental methods, the number of rentals is increasing with temperature, reaching a peak at 20 degrees, then decreases slowly when temperature is high.
+
+
+Finally, we can create a box plot to describe the distribution of bike rentals by causal and registered users.
+
+```{r}
+boxplot(bike_sharing_daily$casual, bike_sharing_daily$registered, 
+        col = c("blue", "green"), 
+        ylab = "Number of bikes", 
+        xlab = "Rental method (Casual - Registered")
+```
+
+Both distributions are roughly normally distributed. The median bike rental for registered users is high then causal users. This is interesting because the goal of any business is to have high number of registered members.
+
+# Task Two: Create interactive time series plots
+
+In the first task, we performed descriptive analysis to answer some interesting questions. In this task, we will create nice visualizations to uncover insights in the data.
+
+
+## Time Series Visualization using base R Plot
+
+### Plot the cnt vs dteday and examine its patterns and irregularities
+
+First, we can rename the `cnt` variable which is count of total rental bikes including both casual and registered to `value` and the date variable `dteday` to `date` and save into a new data frame. This is to show how column names can be renamed to more informative names.
+
+```{r}
+# Get the data
+bike_sharing <- bike_sharing_daily %>%
+ # Get the columns
+ select(dteday, cnt) %>%
+ # Change the columns name
+ set_names(c("date", "value"))
+```
+
+Now, create a plot of `value` and `date` using base R `plot()` function.
+
+```{r}
+par(mfrow=c(1,1))
+plot(bike_sharing$date, bike_sharing$value, type="h", col="blue")
+```
+
+The count of total rental bikes plotted through time makes a double bell-like graph, showing the same overall shape, and an increase in bike rental in 2012.
+
+
+## Time Series Visualization using `timetk` package
+
+Create a plot of `value` and `date` using the `plot_time_series()` function. 
+```{r}
+## Plot the data and count of total rental bikes
+bike_sharing %>%
+  plot_time_series(date, value)
+
+## Make the plot interactive
+bike_sharing %>%
+  plot_time_series(date, value, .interactive=TRUE, .plotly_slider=TRUE)
+```
+
+Now, let's return the count of total rental bikes for each year
+```{r}
+## Plot the data and count of total rental bikes grouped by year
+bike_sharing %>%
+  group_by(year(date)) %>%
+  plot_time_series(date, value, .facet_scales="free")
+
+## Another variant of the plot
+bike_sharing %>%
+  group_by(year(date)) %>%
+  plot_time_series(date, value, .facet_scales="free", .smooth=FALSE, .color_var=month(date), .interactive=FALSE)
+```
+
+Also, we can visualize the time series by its seasonality using the `plot_seasonal_diagnostics()` function in the `timetk` package.
+```{r}
+bike_sharing %>%
+  group_by(year(date)) %>%
+  plot_seasonal_diagnostics(date, value, .x_lab='Date', 
+                            .y_lab='# of users', .title='Bike Sharing Users')
+```
+
+During exploration, a useful idea is **anomaly detection**. Using functions in the `timetk` package such as `plot_anomaly_diagnostics()`, we can explore anomaly in the data.
+```{r}
+# Get the data
+bike_sharing %>%
+  # Group the data by year
+  group_by(year(date)) %>%
+  # Visualize the result
+  plot_anomaly_diagnostics(date, value)
+
+
+## Gather data that has anomaly
+anomaly_data <- bike_sharing %>%
+  group_by(year(date)) %>%
+  tk_anomaly_diagnostics(date, value) %>%
+  filter(anomaly == 'Yes')
+
+## View the anomaly data
+anomaly_data
+
+```
+There were about 12 observations that were anomalies. We will deal with these in the nest task.
+
+# Task Three: Smooth time series data
+
+Since the goal of the project is to build time series model for the number of bike sharing by day, therefore, it is important to clean and tidy up the data for any anomaly/outliers and missing values.
+
+## Clean up any outliers or missing values
+
+As you may have seen from previous tasks, we need to convert `value` and `date` to time series objects.
+
+```{r}
+## Format variables to time series format
+raw_value <- ts(bike_sharing$value)
+timeseries_date <- ts(bike_sharing$date)
+
+## Plot the data
+plot(timeseries_date, raw_value, col="blue")
+```
+
+Then we remove outliers using `tsclean()` and extract the outliers.
+
+```{r}
+## Remove outliers
+clean_value <- tsclean(raw_value)
+
+## Extract the outliers
+outliers <- raw_value[clean_value!=raw_value]
+outliers
+```
+**Note:**
+
+You will notice that this returned around 5 observations as outliers compared to when we used functions in `timetk` that returned 12 observations. This can be attributed to the different mechanisms used for outliers detection.
+
+I made this note to say that this discrepancies would not adversely affect our analysis and therefore should not impede our progress in this analysis.
+
+Finally, we can plot the cleaned time series.
+```{r}
+plot(timeseries_date, clean_value, col="blue")
+```
+
+## Smooth your time series and compare with the original
+
+For this part, we will use two types of smoothing: a Simple Exponential Smoothing and a Simple Moving Average with order 10. The idea for smoothing is to help with short-term forecasting.
+
+```{r}
+## Smooth the data using HoltWinters
+smoothed_data <- HoltWinters(clean_value, beta=FALSE, gamma=FALSE)
+smoothed_data
+
+## Plot the smoothed data
+plot(smoothed_data)
+```
+
+```{r}
+## Smooth the data using SMA of order 10
+smoothed_data_sma <- SMA(clean_value, n=10)
+
+## Plot the smoothed moving average
+plot(smoothed_data_sma, col="blue")
+```
+
+Now we will be using the smoothed time series with order 7, that we will name hereafter `value_ma`.
+
+First, we create the smoothed time series with order 7.
+
+```{r}
+## Smooth the data using SMA of order 7
+value_ma <- SMA(clean_value, n=7)
+
+## Plot the data
+plot(value_ma, col="blue")
+```
+
+The two methods looks to produce similar results. However, in real world time series analysis, we would want to be able to make future predictions or forecasts. Therefore, fitting a time series model that can make forecast is usually the end goal.
+
+In the next task, we will prepare the data for time series modelling ny decomposing and checking the stationarity of the data.
+
+# Task Four: Decompse and access the stationarity of time series data
+
+## Decompose the data
+
+### Transform `clean_value` into a time series with frequency 30 named clean_value_ma.
+
+As a first step, we want to create a time series object from `clean_value` using the number of observations per unit of time (frequency = 30).
+
+**Note:** There is no hard or fast rule on the choice of frequency = 30. The choice is arbitrary and totally depends on intuition. However, the choice may be guided by the number of observations in the data. In this analysis, the number of observations is 731, so a choice of 30 is plausible.
+
+```{r}
+clean_value_ma <- ts(clean_value, frequency = 30)
+plot(clean_value_ma, col="blue")
+```
+
+Now that we have created a time series object with an appropriate frequency and visualized it, we can begin to probe into the data by asking some questions.
+
+For example we may ask, **does the series `clean_value_ma` appear to have trends or seasonality?**
+
+Yes, the `clean_value_ma` time series shows a general tendency of rental increasing in the first two seasons then decreases in the last two seasons. The time series also shows a repeating short-term cycle through the two years.
+
+
+### Use `decompose()` to examine and possibly remove components of the series
+
+Having confirmed that seasonality exist, we can decompose and remove components of the data using the `decompose()` function.
+
+```{r}
+clean_value_ma_decomposed <- decompose(clean_value_ma)
+plot(clean_value_ma_decomposed, col="blue")
+```
+
+The seasonal component confirms our hypothesis, and shows up even a more interesting seasonal monthly cycle.
+
+### Create a time series `deseasonal_value` by removing the seasonal component
+
+Let's remove the seasonal component,
+
+```{r}
+## Remove seasonal component
+deseasonal_value <- clean_value_ma - clean_value_ma_decomposed$seasonal
+
+## Create a plot to compare the original count value to
+## the count value after removing components
+plot(clean_value_ma, col = "blue", xlab="Time by months")
+legend(1, 8600, legend=c("clean_value_ma", "deseasonal_value"), 
+       col=c("blue", "red"), 
+       lty=1:2, cex=0.8)
+lines(deseasonal_value, col = 'red')
+```
+
+Does it look like there are differences in these plots? Yes! Interesting!
+
+
+## Assess the stationarity of time series data
+This stage in the analysis is very crucial because we cannot proceed to fitting ARIMA models when the stationarity assumption is violated.
+
+Therefore, our next task will be to confirm if this assumption is satisfied and what to do if this assumption is violated.
+
+### Is the series clean_value_ma stationary? If not, how to make stationary?
+
+The Augmented Dickey-Fuller (ADF) test is a common statistical test to determine whether a given time series is stationary or not [1]. We will use the `adf.test()` function in R to perform this test.
+
+```{r}
+adf.test(clean_value_ma, alternative = "stationary")
+```
+
+The p-value is greater that 0.05, therefore `clean_value_ma` is not stationary. 
+
+Furthermore, uutocorrelation analysis is an important step in the Exploratory Data Analysis of time series forecasting. The autocorrelation analysis helps detect patterns and check for randomness. It’s especially important when you intend to use an autoregressive–moving-average (ARMA) model for forecasting because it helps to determine its parameters [2]. 
+
+The next plots involves looking at the Autocorrelation Function (ACF) and Partial Autocorrelation Function (PACF) plots. We can use the `acf()` and `pacf()` functions in R.
+
+The ACF plot describes how well the present value of the series is related with its past values. Here, it also confirms that the series is not stationary since the auto-correlation is falling gradually.
+
+```{r}
+## Plot ACF
+acf(clean_value_ma)
+
+## Plot PACF
+pacf(clean_value_ma)
+```
+
+To make the time series stationary, we'll be using *differencing*. Differencing is a method of transforming a time series dataset. It can be used to remove the series dependence on time, so-called temporal dependence. This includes structures like trends and seasonality [3]. Differencing is a process of subtracting each data point in the series from its successor.
+
+First, we need to know how many differencing is needed. We will use the `diff()` function.
+
+```{r}
+## Conduct differencing
+clean_value_ma_diff <- diff(clean_value_ma, differences = 1)
+
+## Perform ADF test 
+adf.test(clean_value_ma_diff, alternative = "stationary")
+```
+
+The p-value is smaller than 0.05. `clean_value_ma_diff` is stationary. We conclude that we only need **one** differencing to make `clean_value_ma` stationary.
+
+Now, that we have seen how decompose and how to assess for stationarity. We will proceed to fit the time series model on the `deseasonal_value` data we had earlier where we removed seasonal components.
+
+# Task Five: Fit and forecast time series data using ARIMA models
+
+## Fit a manual ARIMA model to `deseasonal_value`
+
+ARIMA (autoregressive integrated moving average) is a commonly used technique utilized to fit time series data and forecasting. It is a generalized version of ARMA (autoregressive moving average) process, where the ARMA process is applied for a differenced version of the data rather than original [4].
+
+Three numbers *p, d,* and *q* specify ARIMA model and the ARIMA model is said to be of order *(p,d,q)*. Here *p, d,* and *q* are the orders of AR part, Difference and the MA part respectively.
+
+AR and MA- both are different techniques to fit stationary time series data. ARMA (and ARIMA) is a combination of these two methods for better fit of the model.
+
+First, we need to check if the time series has a tendency. We will decompose the data and plot the decomposed data.
+
+```{r}
+## Decompose deseasonal_value data
+deseasonal_value_decomposed <- decompose(deseasonal_value)
+
+## Plot the decomposed data
+plot(deseasonal_value_decomposed, col="blue")
+```
+
+The plot shows that `deseasonal_value` doesn't have a tendency but have a seasonality. Now we check if the time series is stationary as we have seen in task 4.
+
+```{r}
+## Conduct the ADF test
+adf.test(deseasonal_value, alternative = "stationary")
+
+## Plot the ACF and PACF
+acf(deseasonal_value)
+pacf(deseasonal_value)
+```
+
+`deseasonal_value` is not stationary as seen from the p-value of the ADF test, the ACF, and PACF plots. Therefore, we need to do a differencing.
+
+```{r}
+## Perform differencing on deseasonal_value
+deseasonal_value_diff <- diff(deseasonal_value, differences = 1)
+
+## Perform ADF test to assess for stationarity
+adf.test(deseasonal_value_diff, alternative = "stationary")
+```
+
+`deseasonal_value_diff` is stationary, since its p-value is less that 0.05. The ADF test also returns the lag order q = 8, and we have d = 1. From PACF, it's clearly that within 6 lags the AR is significant. which means, we can use p = 6.
+
+Now, we can fit a manual ARIMA using this parameters on the `deseasonal_value_diff` data.
+
+```{r}
+deseasonal_value_arima <- arima(deseasonal_value_diff, order = c(6,0,8))
+deseasonal_value_arima
+```
+
+Great! However, there are opportunities to better model. We may not have used the best approach to select p, d and q. We need to evaluate this model and iterate.
+
+Before we proceed to iterate to get a better manual model, let's fit an auto ARIMA to the data. 
+
+## Fit an ARIMA with Auto-ARIMA
+
+We will use the `auto.arima()` function to fit an ARIMA model of `deseasonal_value`.
+
+```{r}
+deseasonal_value_autoarima <- auto.arima(deseasonal_value, seasonal = FALSE)
+deseasonal_value_autoarima
+```
+
+Next, we will check residuals of the fitted model. Ideally, the residulas should have no patterns and be normally distributed.
+
+```{r}
+## Return the residuals of the auto ARIMA
+deseasonal_value_autoarima_residuals <- deseasonal_value_autoarima$residuals
+
+## Plot the residuals to inspect for patterns
+tsdisplay(deseasonal_value_autoarima_residuals, 
+          main='(1,1,1) Model Residuals') 
+```
+
+Another useful way is to visualize the residuals using a histogram.
+```{r}
+hist(deseasonal_value_autoarima_residuals)
+```
+
+The histogram doesn't look to be normally distributed. We can test further using a statistical test, the *Shapiro-Wilk test*. The Shapiro-Wilk test is a test of normality. It is used to determine whether or not a sample comes from a normal distribution [5].
+
+In R, we can use the `shapiro.test()` function to perform the test. This function produces a test statistic *W* along with a corresponding p-value. If the p-value is less than $\alpha$ = 0.05, there is sufficient evidence to say that the sample does not come from a population that is normally distributed [5].
+
+```{r}
+shapiro.test(deseasonal_value_autoarima_residuals)
+```
+
+Clearly, the p-value is less than 0.05 suggesting that the residuals are not normally distributed. The `auto.arima()` function didn't give us a good model. We should iterate!  
+
+
+## Evaluate and iterate the models
+
+We will evaluate and iterate by asking these questions:
+
+* Are there visible patterns or bias? Plot plot ACF/PACF to see this
+
+* Refit model if needed. Compare model errors and fit criteria such as AIC or BIC.
+
+
+To do this, we will train 10 different ARIMA models by changing the p-order value. This is similar to what is used in machine learning called *hyperparameter tuning.*
+
+```{r, warning=FALSE}
+## Create an empty vector
+aic_values <- c()
+
+## Fit 10 different ARIMA models
+for (p in (0:9)){
+  deseasonal_value_arima <- arima(deseasonal_value, order = c(p,0,8))
+  aic_values <- c(aic_values, deseasonal_value_arima$aic)
+}
+
+## Select the model with the lowest AIC
+which.min(aic_values)
+```
+
+Usually, when comparing different models, the model with the lowest AIC is considered the model with a better fit. Here, the model order that gave the minimum AIC value is p=8, d=0 and q=8 . Now we train the manual model to be used for forecasting.
+
+```{r}
+deseasonal_value_arima <- arima(deseasonal_value, order = c(8,0,8))
+deseasonal_value_arima
+```
+
+## Calculate forecast using the chosen manual ARIMA model
+
+```{r}
+## Make forecast using the best manual model
+value_forcast <- forecast(deseasonal_value_arima)
+
+## Plot the forecast
+plot(value_forcast)
+```
+
+Amazing! This plot shows us what the next count of bike rentals will look like.
+
+We can investigate whether the predictive model can be improved upon by checking whether the in-sample forecast errors show non-zero autocorrelations at lags 1-20, by making a correlogram and carrying out the Ljung-Box test.
+```{r}
+## Plot the ACF
+acf(value_forcast$residuals, lag.max=20)
+
+## Perform the  Ljung-Box test
+Box.test(value_forcast$residuals, lag=20, type="Ljung-Box")
+```
+The correlogram shows that the autocorrelations for the in-sample forecast errors do not exceed the significance bounds for lags 1-20. Furthermore, the p-value for Ljung-Box test is 0.6, indicating that there is little evidence of non-zero autocorrelations at lags 1-20.
+
+Furthermore, we can check whether the forecast errors have constant variance over time, and are normally distributed with mean zero, by making a time plot of the forecast errors and a histogram (with overlaid normal curve).
+
+```{r}
+## Make a time plot
+plot.ts(value_forcast$residuals)
+
+## Define a function.
+
+plotForecastErrors <- function(forecasterrors)
+  {
+     ## make a histogram of the forecast errors:
+     mybinsize <- IQR(forecasterrors)/4
+     mysd   <- sd(forecasterrors)
+     mymin  <- min(forecasterrors) - mysd*5
+     mymax  <- max(forecasterrors) + mysd*3
+     ## generate normally distributed data with mean 0 and standard deviation mysd
+     mynorm <- rnorm(10000, mean=0, sd=mysd)
+     mymin2 <- min(mynorm)
+     mymax2 <- max(mynorm)
+     if (mymin2 < mymin) { mymin <- mymin2 }
+     if (mymax2 > mymax) { mymax <- mymax2 }
+     ## make a red histogram of the forecast errors, 
+     ## with the normally distributed data overlaid:
+     mybins <- seq(mymin, mymax, mybinsize)
+     hist(forecasterrors, col="red", freq=FALSE, breaks=mybins)
+     ## freq=FALSE ensures the area under the histogram = 1
+     ## generate normally distributed data with mean 0 and standard deviation mysd
+     myhist <- hist(mynorm, plot=FALSE, breaks=mybins)
+     ## plot the normal curve as a blue line on top of 
+     ## the histogram of forecast errors:
+     points(myhist$mids, myhist$density, type="l", col="blue", lwd=2)
+  }
+
+## Plot a histogram
+plotForecastErrors(value_forcast$residuals)
+```
+
+The time plot of forecast errors shows that the forecast errors have roughly constant variance over time. The histogram of forecast errors show that it is plausible that the forecast errors are normally distributed with mean zero and constant variance.
+
+Thus, the Ljung-Box test shows that there is little evidence of autocorrelations in the forecast errors, while the time plot and histogram of forecast errors show that it is plausible that the forecast errors are normally distributed with mean zero and constant variance. Therefore, we can conclude that manual ARIMA provides an adequate predictive model for count of total rental bike, which probably cannot be improved upon. In addition, it means that the assumptions that the 80% and 95% predictions intervals were based upon are probably valid.
+
+**Note:** The function `plotForecastErrors` was written by Avril Coghlan. 
+
+**Source:** https://a-little-book-of-r-for-time-series.readthedocs.io/en/latest/src/timeseries.html
+
+
+## Plot both the original and the forecasted time series
+
+Let's create a plot comparing the original count of total rental bikes and the forecast.
+```{r}
+plot(deseasonal_value, col="red") ## original
+legend(1, 8600, legend=c("Original", "Fitted"), col=c("red", "blue"), lty=1:2, cex=0.8)
+lines(fitted(deseasonal_value_arima), col="blue") ## fitted
+```
+
+# Extra: Machine Learning and Time Series Analysis
+
+In this section, I want to show how we can inculcate machine learning ideas such as data partitioning, training the model on train set and evaluating on test set into time series data modelling.
+
+
+## Split the data into training and test times series
+
+Let's start with partitioning into training and test sets. 
+
+```{r}
+## Create the time at which a time series was sampled
+end_time = time(deseasonal_value)[700]
+
+## Create the train set
+train_set <- window(deseasonal_value, end=end_time)
+
+## Create the test set
+test_set <- window(deseasonal_value, start=end_time)
+```
+
+## Fit an ARIMA model, manually and with auto ARIMA on the training set
+
+Similar to machine learning, let's fit the manual and auto ARIMA models on the training data and evaluate the model on the test set.
+
+```{r}
+## Fit a manual ARIMA model
+manual_fit <- Arima(train_set, order = c(8, 0, 8))
+manual_fc <- forecast(manual_fit, h=32)
+
+## Print the accuracy of the manual ARIMA model
+## evaluated on the test set
+print(paste("Accuracy of the manual Arima model:", 
+            accuracy(manual_fc, test_set)[2,"RMSE"]))
+
+## Fit an auto ARIMA model
+auto_fit <- auto.arima(train_set, seasonal = FALSE)
+auto_fc <- forecast(auto_fit, h=32)
+
+## Print the accuracy of the auto ARIMA model
+## evaluated on the test set
+print(paste("Accuracy of the auto Arima model : ", 
+            accuracy(auto_fc, test_set)[2,"RMSE"]))
+```
+
+## Plot both the original and the forecasted time series
+
+```{r}
+## Create a plot comparing the original count of total 
+## rental bikes and the forecast made by manual ARIMA
+
+plot(deseasonal_value, col="red") ## original
+legend(1, 8600, legend=c("Original", "Manual Arima"), 
+       col=c("red", "blue"), lty=1:2, cex=0.8)
+lines(fitted(manual_fc), col="blue") ## Manual ARIMA
+
+```
+
+```{r}
+## Create a plot comparing the original count of total 
+## rental bikes and the forecast made by auto ARIMA
+plot(deseasonal_value, col="red") ## original
+legend(1, 8600, legend=c("Original", "Auto Arima"), 
+       col=c("red", "green"), lty=1:2, cex=0.8)
+lines(fitted(auto_fit), col="green") ## auto ARIMA
+```
+
+## Forecast the next 25 observations and plot the original time series and the forecasted one
+
+```{r}
+## Forecast using manual and auto ARIMA models
+deseasonal_value_manual <- forecast(manual_fit, h=25)
+deseasonal_value_auto <- forecast(auto_fit, h=25)
+
+## Create a plot to compare both models
+par(mfrow=c(2,1))
+plot(deseasonal_value_manual, main = "Forecast with manual Arima", include = test_set)
+plot(deseasonal_value_auto, main = "Forecast with auto Arima", include = test_set)
+```
+
+The manual Arima model gives a more natural forecast than the auto Arima one.
+
+
+
+# References
+
+1. R-Bloggers. Augmented Dickey-Fuller (ADF) Test in R. R-Bloggers website. https://www.r-bloggers.com/2021/12/augmented-dickey-fuller-adf-test-in-r/. Published December 4, 2021. Accessed March 3, 2023.
+
+2. Towards Data Science. Interpreting ACF and PACF Plots for Time Series Forecasting. Medium website. https://towardsdatascience.com/interpreting-acf-and-pacf-plots-for-time-series-forecasting-af0d6db4061c. Published August 2, 2021. Accessed March 3, 2023.
+
+3. Machine Learning Mastery. How to Remove Trends and Seasonality with a Difference Transform in Python. Machine Learning Mastery website. https://machinelearningmastery.com/remove-trends-seasonality-difference-transform-python/. Published June 23, 2020. Accessed March 3, 2023.
+
+4. RPubs. ARIMA model for forecasting– Example in R. RPubs website. https://rpubs.com/riazakhan94/arima_with_example. Published December 31, 2017. Accessed March 3, 2023.
+
+5. Statology. How to Perform a Shapiro-Wilk Test in R (With Examples). Statology website. https://www.statology.org/shapiro-wilk-test-r/. Published October 12, 2020. Accessed March 3, 2023.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
